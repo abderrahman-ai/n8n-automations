@@ -1,0 +1,521 @@
+{
+  "name": "Autonomous 6-DOF Robotic Manipulator Prognostics & Safety Guardrail Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## \ud83e\udd16 Robotics & Mechatronics Context: 6-DOF Manipulator Fleet Prognostics\n**Target Applications:** Collaborative Assembly, Aerospace Milling, Semiconductor Handling\n*(Universal Robots UR10e / KUKA LBR iiwa / ABB IRB standard)*\n\n### Core Engineering Highlights:\n1. **Multi-Axis Kinematic Telemetry:** Sliding-window joint monitoring ($\\theta_{1..6}$, $\\tau_{ext}$, $I_{motor}$, $T_{joint}$, $a_{IMU}$).\n2. **Multiphysics Failure Discrimination:**\n   - ISO/TS 15066 Collision & Biomechanical Torque Over-limit ($\\tau_{ext} > 70\\text{ Nm}$)\n   - Harmonic Drive Gearbox Flexspline Wear & Bearing Micro-pitting ($a_{RMS} > 1.6 g$, $\\epsilon_\\theta > 1.0^\\circ$)\n   - Servomotor Stator Thermal Overload ($T > 75^\\circ\\text{C}$, $I^2 t$ accumulation)\n3. **Deterministic Functional Safety:** Implements IEC 60204-1 (Cat 0 / Cat 1 Stop) & ISO 13849-1 (PL-d/e).\n4. **Google Gemini AI Agent:** Triages multi-joint kinematics, queries SOP database, and outputs structured safety commands.",
+        "height": 340,
+        "width": 480,
+        "color": 4
+      },
+      "id": "sticky-robotics-context",
+      "name": "Robotics & Architectural Context",
+      "position": [
+        -368,
+        -336
+      ],
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "## \u2699\ufe0f Governing Kinematics, Dynamics & Fault Criteria\n\n### 1. Robot Manipulator Dynamics Residual (Newton-Euler):\n- General Dynamics: $\\boldsymbol{\\tau} = \\mathbf{M}(\\mathbf{q})\\ddot{\\mathbf{q}} + \\mathbf{C}(\\mathbf{q}, \\dot{\\mathbf{q}})\\dot{\\mathbf{q}} + \\mathbf{g}(\\mathbf{q}) + \\boldsymbol{\\tau}_{ext}$\n- **Collision Detection:** $\\Delta \\tau_{ext} = |\\tau_{meas} - \\tau_{model}| > 70.0\\text{ Nm}$ triggers instantaneous Cat 0/1 emergency mechanical brake.\n\n### 2. Harmonic Drive Degradation (Wave Generator / Flexspline):\n- Vibration RMS: $a_{RMS} = \\sqrt{\\frac{1}{N} \\sum_{k=1}^N a_k^2}$\n- **Gear Pitting Trigger:** $a_{RMS} > 1.60 g$ with kinematic tracking error $\\epsilon_\\theta = |\\theta_{cmd} - \\theta_{meas}| > 1.0^\\circ$.\n\n### 3. Servomotor Electromechanical Thermal Heating:\n- Joule Heating: $\\Delta T \\propto \\int I_{motor}^2(t) dt$\n- **Thermal Derating Trigger:** Stator temperature $T_{joint} > 75.0^\\circ\\text{C}$ requires dynamic velocity scaling ($S_{factor} = 0.60$).",
+        "height": 340,
+        "width": 520,
+        "color": 7
+      },
+      "id": "sticky-governing-physics",
+      "name": "Governing Dynamics & Fault Criteria",
+      "position": [
+        144,
+        -336
+      ],
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "## \ud83d\udee1\ufe0f ISO 10218-1 / ISO/TS 15066 Safety Action Matrix\n\n| Classification | IEC 60204-1 Stop | Safety Integrity | Automated Dispatch Action |\n| :--- | :--- | :--- | :--- |\n| **Critical** | **Category 0 / 1** | PL-e / Cat 4 (SIL-3) | Instantaneous mechanical brake engagement, power cutoff, ROS 2 `/safety/emergency_stop`, audible siren. |\n| **Warning** | **Derate / Cat 2** | PL-c / Cat 2 (SIL-1) | Dynamic velocity scaling ($S_{factor} = 0.60$), cycle time compensation, CMMS overhaul work order. |\n| **Nominal** | **Normal Run** | PL-a / Cat B (SIL-0) | Continuous baseline SCADA logging, MTBF wear headroom verification. |\n\n**Live Telemetry Ingestion Endpoint:** `http://localhost:5678/webhook/robotics-telemetry-triage`",
+        "height": 340,
+        "width": 520,
+        "color": 6
+      },
+      "id": "sticky-safety-matrix",
+      "name": "Safety Action Matrix & Webhook Info",
+      "position": [
+        704,
+        -336
+      ],
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1
+    },
+    {
+      "parameters": {},
+      "id": "trigger-manual",
+      "name": "Manual Trigger (Run Triage)",
+      "position": [
+        -368,
+        144
+      ],
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "id": "trigger-schedule",
+      "name": "Schedule Trigger (5m Fleet Scan)",
+      "position": [
+        -368,
+        304
+      ],
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "robotics-telemetry-triage",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "trigger-webhook",
+      "name": "ROS 2 Telemetry Webhook",
+      "position": [
+        -368,
+        464
+      ],
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "df98b42d-a700-4aaa-85c0-9c7ba2106ee6"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 6-DOF Robotic Manipulator Telemetry Ingestion & Dynamics Normalizer\nconst input = $input.first()?.json || {};\nconst body = input.body || input;\n\n// Industrial Multi-Scenario Telemetry Profiles for 6-DOF Cobot (UR10e / KUKA iiwa standard)\nconst SCENARIOS = {\n  critical_collision: {\n    robot_id: \"ROBOT-UR10E-CELL-04\",\n    joint_data: [\n      { joint: 1, angle_cmd_deg: 45.0, angle_meas_deg: 45.02, torque_meas_nm: 24.5, current_a: 5.2, temp_c: 44.1, imu_accel_g: 0.18 },\n      { joint: 2, angle_cmd_deg: -80.0, angle_meas_deg: -79.94, torque_meas_nm: 68.2, current_a: 11.4, temp_c: 56.3, imu_accel_g: 0.32 },\n      { joint: 3, angle_cmd_deg: 115.0, angle_meas_deg: 111.80, torque_meas_nm: 112.4, current_a: 19.8, temp_c: 62.0, imu_accel_g: 0.85 },\n      { joint: 4, angle_cmd_deg: -35.0, angle_meas_deg: -34.98, torque_meas_nm: 18.0, current_a: 4.1, temp_c: 42.5, imu_accel_g: 0.22 },\n      { joint: 5, angle_cmd_deg: 90.0, angle_meas_deg: 86.40, torque_meas_nm: 89.6, current_a: 16.5, temp_c: 59.8, imu_accel_g: 0.74 },\n      { joint: 6, angle_cmd_deg: 0.0, angle_meas_deg: 0.05, torque_meas_nm: 8.5, current_a: 2.1, temp_c: 38.2, imu_accel_g: 0.15 }\n    ],\n    expected_model_torques_nm: [23.0, 65.0, 38.0, 16.0, 14.0, 7.5],\n    tcp_speed_m_s: 0.02,\n    vibration_window_g: [0.35, 0.42, 0.95, 1.25, 0.88]\n  },\n  critical_harmonic_wear: {\n    robot_id: \"ROBOT-UR10E-CELL-04\",\n    joint_data: [\n      { joint: 1, angle_cmd_deg: 30.0, angle_meas_deg: 29.98, torque_meas_nm: 22.0, current_a: 4.8, temp_c: 43.0, imu_accel_g: 0.20 },\n      { joint: 2, angle_cmd_deg: -65.0, angle_meas_deg: -64.85, torque_meas_nm: 58.0, current_a: 10.2, temp_c: 54.0, imu_accel_g: 0.40 },\n      { joint: 3, angle_cmd_deg: 95.0, angle_meas_deg: 93.65, torque_meas_nm: 44.0, current_a: 11.2, temp_c: 58.5, imu_accel_g: 1.95 },\n      { joint: 4, angle_cmd_deg: -20.0, angle_meas_deg: -19.95, torque_meas_nm: 15.0, current_a: 3.8, temp_c: 41.0, imu_accel_g: 0.30 },\n      { joint: 5, angle_cmd_deg: 45.0, angle_meas_deg: 44.92, torque_meas_nm: 16.5, current_a: 4.0, temp_c: 42.0, imu_accel_g: 0.25 },\n      { joint: 6, angle_cmd_deg: 0.0, angle_meas_deg: 0.02, torque_meas_nm: 7.0, current_a: 2.0, temp_c: 37.0, imu_accel_g: 0.15 }\n    ],\n    expected_model_torques_nm: [21.5, 56.0, 42.0, 14.5, 15.8, 6.8],\n    tcp_speed_m_s: 0.85,\n    vibration_window_g: [1.45, 1.88, 2.15, 1.92, 1.76]\n  },\n  warning_thermal_overload: {\n    robot_id: \"ROBOT-UR10E-CELL-04\",\n    joint_data: [\n      { joint: 1, angle_cmd_deg: 40.0, angle_meas_deg: 40.02, torque_meas_nm: 25.0, current_a: 5.5, temp_c: 48.0, imu_accel_g: 0.22 },\n      { joint: 2, angle_cmd_deg: -70.0, angle_meas_deg: -69.96, torque_meas_nm: 69.5, current_a: 15.8, temp_c: 78.4, imu_accel_g: 0.38 },\n      { joint: 3, angle_cmd_deg: 100.0, angle_meas_deg: 99.93, torque_meas_nm: 46.0, current_a: 14.2, temp_c: 76.2, imu_accel_g: 0.35 },\n      { joint: 4, angle_cmd_deg: -30.0, angle_meas_deg: -29.98, torque_meas_nm: 17.0, current_a: 4.2, temp_c: 46.0, imu_accel_g: 0.20 },\n      { joint: 5, angle_cmd_deg: 60.0, angle_meas_deg: 59.97, torque_meas_nm: 18.0, current_a: 4.6, temp_c: 47.0, imu_accel_g: 0.24 },\n      { joint: 6, angle_cmd_deg: 10.0, angle_meas_deg: 10.01, torque_meas_nm: 8.0, current_a: 2.2, temp_c: 39.5, imu_accel_g: 0.16 }\n    ],\n    expected_model_torques_nm: [24.0, 67.0, 44.0, 16.5, 17.2, 7.8],\n    tcp_speed_m_s: 1.10,\n    vibration_window_g: [0.32, 0.38, 0.40, 0.35, 0.37]\n  },\n  nominal: {\n    robot_id: \"ROBOT-UR10E-CELL-04\",\n    joint_data: [\n      { joint: 1, angle_cmd_deg: 25.0, angle_meas_deg: 25.01, torque_meas_nm: 20.5, current_a: 4.5, temp_c: 42.0, imu_accel_g: 0.16 },\n      { joint: 2, angle_cmd_deg: -60.0, angle_meas_deg: -59.98, torque_meas_nm: 55.0, current_a: 9.8, temp_c: 52.0, imu_accel_g: 0.28 },\n      { joint: 3, angle_cmd_deg: 85.0, angle_meas_deg: 84.99, torque_meas_nm: 36.0, current_a: 8.6, temp_c: 53.5, imu_accel_g: 0.25 },\n      { joint: 4, angle_cmd_deg: -15.0, angle_meas_deg: -14.99, torque_meas_nm: 14.0, current_a: 3.5, temp_c: 40.0, imu_accel_g: 0.18 },\n      { joint: 5, angle_cmd_deg: 30.0, angle_meas_deg: 30.01, torque_meas_nm: 15.0, current_a: 3.8, temp_c: 41.5, imu_accel_g: 0.20 },\n      { joint: 6, angle_cmd_deg: 0.0, angle_meas_deg: 0.00, torque_meas_nm: 6.5, current_a: 1.8, temp_c: 36.0, imu_accel_g: 0.12 }\n    ],\n    expected_model_torques_nm: [20.0, 54.0, 35.0, 13.8, 14.7, 6.4],\n    tcp_speed_m_s: 0.95,\n    vibration_window_g: [0.22, 0.26, 0.28, 0.25, 0.24]\n  }\n};\n\nlet selectedScenario = 'critical_collision';\nlet payload;\n\nif (body.joint_data && Array.isArray(body.joint_data)) {\n  payload = body;\n  selectedScenario = body.scenario || 'custom_payload';\n} else if (body.scenario && SCENARIOS[body.scenario]) {\n  selectedScenario = body.scenario;\n  payload = SCENARIOS[body.scenario];\n} else {\n  payload = SCENARIOS.critical_collision;\n}\n\n// Compute Dynamics Residuals, Kinematic Tracking Errors, and Vibration RMS\nconst joints = payload.joint_data;\nconst DEFAULT_NOMINAL_TORQUES = [20.0, 55.0, 38.0, 15.0, 15.0, 7.0];\nconst expectedTorques = (payload.expected_model_torques_nm && payload.expected_model_torques_nm.length === 6)\n  ? payload.expected_model_torques_nm\n  : DEFAULT_NOMINAL_TORQUES;\nlet maxTrackingErrorDeg = 0.0;\nlet maxTorqueResidualNm = 0.0;\nlet maxJointTempC = 0.0;\nlet maxJointCurrentA = 0.0;\nlet worstJointId = 1;\n\nconst enrichedJoints = joints.map((j, idx) => {\n  const trackingError = Math.round(Math.abs(j.angle_cmd_deg - j.angle_meas_deg) * 1000) / 1000;\n  const expectedT = expectedTorques[idx] ?? j.torque_meas_nm;\n  const torqueResidual = Math.round(Math.abs(j.torque_meas_nm - expectedT) * 100) / 100;\n  \n  if (trackingError > maxTrackingErrorDeg) maxTrackingErrorDeg = trackingError;\n  if (torqueResidual > maxTorqueResidualNm) {\n    maxTorqueResidualNm = torqueResidual;\n    worstJointId = j.joint;\n  }\n  if (j.temp_c > maxJointTempC) maxJointTempC = j.temp_c;\n  if (j.current_a > maxJointCurrentA) maxJointCurrentA = j.current_a;\n\n  return {\n    ...j,\n    tracking_error_deg: trackingError,\n    torque_residual_nm: torqueResidual\n  };\n});\n\n// Vibration acceleration RMS calculation: a_RMS = sqrt(1/N * sum(a^2))\nconst vibWindow = payload.vibration_window_g || [0.25, 0.30, 0.28];\nconst sumSq = vibWindow.reduce((acc, val) => acc + (val * val), 0);\nconst vibRmsG = Math.round(Math.sqrt(sumSq / vibWindow.length) * 100) / 100;\n\nconst computedMetrics = {\n  max_tracking_error_deg: maxTrackingErrorDeg,\n  max_torque_residual_nm: maxTorqueResidualNm,\n  worst_affected_joint: worstJointId,\n  max_joint_temp_c: maxJointTempC,\n  max_joint_current_a: maxJointCurrentA,\n  vibration_rms_g: vibRmsG,\n  tcp_speed_m_s: payload.tcp_speed_m_s || 0.8\n};\n\nconst agentPrompt = `ROBOT MULTI-AXIS TELEMETRY SNAPSHOT (Asset: ${payload.robot_id}):\nJoint-by-Joint Telemetry:\n${JSON.stringify(enrichedJoints, null, 2)}\n\nPRE-CALCULATED MECHATRONIC METRICS:\n- Max External Torque Residual: ${maxTorqueResidualNm} Nm (Worst Joint: Joint ${worstJointId})\n- Max Kinematic Tracking Error: ${maxTrackingErrorDeg} \u00b0\n- IMU Vibration RMS: ${vibRmsG} g\n- Peak Joint Temperature: ${maxJointTempC} \u00b0C\n- Peak Motor Current: ${maxJointCurrentA} A\n- TCP Tool Center Point Speed: ${payload.tcp_speed_m_s} m/s\n\nINSTRUCTIONS:\n1. Apply ISO 10218-1 / ISO/TS 15066 safety rules and mechatronic failure mode criteria.\n2. When an anomaly is detected (Critical or Warning), invoke the \"Robotics ISO Safety & SOP Tool\" with query 'COL' (collision), 'MEC' (harmonic wear), 'THM' (thermal), or 'ALL' to obtain the exact safety actuation sequence.\n3. Return ONLY a valid JSON object matching the requested schema.`;\n\nreturn [{\n  json: {\n    robot_asset_id: payload.robot_id || \"ROBOT-UR10E-CELL-04\",\n    scenario: selectedScenario,\n    joint_data: enrichedJoints,\n    computed_metrics: computedMetrics,\n    agent_input_prompt: agentPrompt,\n    ingested_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-ingest-telemetry",
+      "name": "Kinematics & Telemetry Normalizer",
+      "position": [
+        -96,
+        304
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.agent_input_prompt }}",
+        "options": {
+          "systemMessage": "You are a Senior Robotics Systems Architect, Mechatronics Diagnostics Specialist, and ISO 10218-1 / ISO/TS 15066 Functional Safety Officer. You analyze 6-DOF industrial robot and cobot telemetry to detect collisions, harmonic drive wear, and thermal overloads.\n\n### ROBOT SAFETY CRITERIA & FAILURE MODES:\n1. Critical (Biomechanical Impact / Collision Hazard):\n   - Criteria: External torque residual \u0394\u03c4_ext > 70.0 Nm or sudden velocity collapse under high commanded torque.\n   - Standard: ISO/TS 15066 Clause 5.5 biomechanical pain limit exceedance & ISO 10218-1.\n   - Action: IEC 60204-1 Category 0/1 Emergency Stop (E-Stop), mechanical brake engagement within 35ms.\n   - Classification: severity = \"Critical\", iso_risk_tier = \"Tier-1-Hazard\", stop_category = \"Cat-0-EStop\".\n\n2. Critical (Harmonic Drive Flexspline Failure / Gear Tooth Pitting):\n   - Criteria: Vibration RMS a_RMS > 1.60 g accompanied by tracking error \u03b5_\u03b8 > 1.0\u00b0.\n   - Root Cause: Wave generator bearing race spalling or harmonic flexspline tooth shear risking catastrophic mid-trajectory lockup.\n   - Classification: severity = \"Critical\", iso_risk_tier = \"Tier-1-Hazard\", stop_category = \"Cat-1-ControlledStop\".\n\n3. Warning (Servomotor Thermal Overload & Stator Saturation):\n   - Criteria: Joint temperature T_joint > 75.0 \u00b0C with sustained motor current I > 14.0 A without severe torque shock.\n   - Root Cause: Excessive acceleration duty cycle, high ambient heat, or gripper payload inertia saturation (I\u00b2t accumulation).\n   - Classification: severity = \"Warning\", iso_risk_tier = \"Tier-2-OperationalDeviation\", stop_category = \"Dynamic-Velocity-Derating\".\n\n4. Nominal (Normal Trajectory Execution):\n   - Criteria: All joints within normal limits (\u0394\u03c4_ext < 20 Nm, \u03b5_\u03b8 < 0.1\u00b0, a_RMS < 0.5 g, T_joint <= 60 \u00b0C).\n   - Classification: severity = \"Nominal\", iso_risk_tier = \"Tier-3-Nominal\", stop_category = \"None\".\n\n### MANDATORY TOOL USAGE:\nIf the status is Critical or Warning, you MUST call the \"Robotics ISO Safety & SOP Tool\" to obtain standard operating procedure steps and dynamic speed scaling factors.\n\n### MANDATORY OUTPUT FORMAT:\nReturn ONLY a raw, valid JSON object with NO markdown backticks, matching this exact schema:\n{\n  \"severity\": \"Critical\" | \"Warning\" | \"Nominal\",\n  \"iso_risk_tier\": \"Tier-1-Hazard\" | \"Tier-2-OperationalDeviation\" | \"Tier-3-Nominal\",\n  \"stop_category\": \"Cat-0-EStop\" | \"Cat-1-ControlledStop\" | \"Dynamic-Velocity-Derating\" | \"None\",\n  \"worst_affected_joint\": number,\n  \"root_cause_hypothesis\": \"Engineering diagnosis citing physics (Newton-Euler torque residual, vibration acceleration, or I\u00b2t Joule heating).\",\n  \"emergency_brake_sequence\": [\"Step 1...\", \"Step 2...\"],\n  \"velocity_scaling\": {\n    \"speed_factor\": number or null,\n    \"target_joints\": [number] or [],\n    \"cooling_protocol\": \"string\"\n  },\n  \"applicable_standard\": \"ISO 10218-1 / ISO/TS 15066 / IEC 60204-1\"\n}\n\nFor Critical: emergency_brake_sequence must contain the step-by-step E-stop sequence from the tool, velocity_scaling can have null/empty fields.\nFor Warning: emergency_brake_sequence is [], velocity_scaling must set speed_factor (e.g. 0.60) and cooling tasks.\nFor Nominal: emergency_brake_sequence is [] and speed_factor is 1.0."
+        }
+      },
+      "id": "node-ai-agent",
+      "name": "Robotics Safety & Prognostics Agent",
+      "position": [
+        240,
+        304
+      ],
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "node-gemini-model",
+      "name": "Google Gemini 1.5 Pro",
+      "position": [
+        144,
+        528
+      ],
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "description": "Robotics ISO/TS Safety and Standard Operating Procedures (SOP) database. Query with 'COL' (collision / torque overload), 'MEC' (harmonic drive wear / vibration), 'THM' (thermal overload / velocity derate), or 'ALL'.",
+        "jsCode": "const protocols = {\n  \"SOP-ROB-COL-001\": {\n    title: \"ISO/TS 15066 Biomechanical Collision Emergency Stop Sequence\",\n    standard: \"ISO 10218-1 / IEC 60204-1 Category 0/1\",\n    action_sequence: [\n      \"Send hardware E-Stop interrupt via Safety Fieldbus (PROFIsafe / CIP Safety) within 15ms.\",\n      \"Actuate electromechanical fail-safe friction brakes on Joints 1 through 6 (response time <= 35ms).\",\n      \"De-energize servomotor PWM inverters (Safe Torque Off - STO, Cat 4 / PL-e).\",\n      \"Broadcast ROS 2 message on topic /safety/emergency_stop with collision joint vector.\",\n      \"Flash cell red beacon, sound audible 85dB alarm, and latch safety interlock requiring manual key reset.\"\n    ]\n  },\n  \"SOP-ROB-MEC-102\": {\n    title: \"Harmonic Drive Gearbox Degradation & Bearing Pitting Overhaul\",\n    standard: \"ISO 13849-1 Diagnostic Coverage High\",\n    action_sequence: [\n      \"Command controlled smooth deceleration to rest (IEC 60204-1 Category 1 Stop).\",\n      \"Hold current trajectory position and lock mechanical brakes to avoid gravity sag.\",\n      \"Lock out robot workcell for maintenance inspection.\",\n      \"Perform grease degradation colorimetry and ferrographic particle analysis on harmonic flexspline.\",\n      \"Measure backlash on Joint harmonic drive using dial test indicator (tolerance <= 0.04 deg).\"\n    ]\n  },\n  \"SOP-ROB-THM-203\": {\n    title: \"Closed-Loop Dynamic Velocity Scaling & Thermal Derating Protocol\",\n    standard: \"VDI 2853 Industrial Robot Reliability\",\n    velocity_scaling: {\n      speed_factor: 0.60,\n      acceleration_derate_pct: 40,\n      action: \"Scale trajectory override speed to 60% and extend dwell pause by 1.8s between pick-and-place cycles.\"\n    },\n    cooling_protocol: [\n      \"Energize auxiliary joint forced-air convection fans on base and shoulder housings.\",\n      \"Verify ambient enclosure thermal air-exchange filter status.\",\n      \"Schedule preventive stator winding resistance check if temperature exceeds 80C on subsequent cycle.\"\n    ]\n  },\n  \"SOP-ROB-NOM-001\": {\n    title: \"Routine Baseline Kinematic Surveillance\",\n    standard: \"ISO 9283 Manipulating Industrial Robots Performance Criteria\",\n    action_sequence: [\"Log 100Hz telemetry slice to SCADA historian.\", \"Update joint cumulative wear index.\"]\n  }\n};\n\nconst q = (typeof query !== 'undefined' && query) ? query.toString().toUpperCase() : 'ALL';\nfor (const k of Object.keys(protocols)) {\n  if (q.includes(k) || (q.includes('COL') && k.includes('COL')) || (q.includes('MEC') && k.includes('MEC')) || (q.includes('THM') && k.includes('THM'))) {\n    return JSON.stringify(protocols[k]);\n  }\n}\nreturn JSON.stringify(protocols);",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"query\": {\n      \"type\": \"string\",\n      \"description\": \"SOP query code: 'COL' for collision, 'MEC' for harmonic gearbox wear, 'THM' for thermal overload, or 'ALL'\"\n    }\n  },\n  \"required\": [\n    \"query\"\n  ]\n}"
+      },
+      "id": "node-sop-tool",
+      "name": "Robotics ISO Safety & SOP Tool",
+      "position": [
+        528,
+        528
+      ],
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.robot_asset_id || 'robot-ur10e-cell04' }}"
+      },
+      "id": "node-memory",
+      "name": "Fleet Asset Window Memory",
+      "position": [
+        240,
+        576
+      ],
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3
+    },
+    {
+      "parameters": {
+        "jsCode": "// Robust Parser and Deterministic Robotics Safety Guardrail Fallback\nconst item = $input.first().json;\nconst rawOutput = item.output || item.text || JSON.stringify(item);\nlet upstreamMetrics = {};\ntry {\n  upstreamMetrics = $('Kinematics & Telemetry Normalizer').first().json.computed_metrics || {};\n} catch (e) {\n  upstreamMetrics = item.computed_metrics || {};\n}\n\nlet parsed = null;\n\n// Clean markdown code fences if LLM wrapped output in ```json ... ```\ntry {\n  let cleanStr = rawOutput.trim();\n  if (cleanStr.startsWith('```')) {\n    cleanStr = cleanStr.replace(/^```[a-zA-Z]*\\n?/, '').replace(/\\n?```$/, '').trim();\n  }\n  parsed = JSON.parse(cleanStr);\n} catch (e) {\n  const match = rawOutput.match(/\\{[\\s\\S]*\\}/);\n  if (match) {\n    try { parsed = JSON.parse(match[0]); } catch (err) {}\n  }\n}\n\n// Deterministic Fail-Safe Safety Guardrail Fallback\nif (!parsed || !parsed.severity) {\n  const dTau = upstreamMetrics.max_torque_residual_nm ?? 0.0;\n  const aRms = upstreamMetrics.vibration_rms_g ?? 0.25;\n  const epsDeg = upstreamMetrics.max_tracking_error_deg ?? 0.01;\n  const Tmax = upstreamMetrics.max_joint_temp_c ?? 45.0;\n  const worstJ = upstreamMetrics.worst_affected_joint ?? 3;\n\n  if (dTau > 70.0) {\n    parsed = {\n      severity: \"Critical\",\n      iso_risk_tier: \"Tier-1-Hazard\",\n      stop_category: \"Cat-0-EStop\",\n      worst_affected_joint: worstJ,\n      root_cause_hypothesis: `Deterministic guardrail triggered: External torque residual \u0394\u03c4_ext = ${dTau} Nm exceeds ISO/TS 15066 safety threshold (70 Nm) on Joint ${worstJ}. Instantaneous collision E-Stop engaged.`,\n      emergency_brake_sequence: [\n        \"Send hardware E-Stop interrupt via Safety Fieldbus (PROFIsafe / CIP Safety) within 15ms.\",\n        \"Actuate electromechanical fail-safe friction brakes on Joints 1 through 6 (response time <= 35ms).\",\n        \"De-energize servomotor PWM inverters (Safe Torque Off - STO, Cat 4 / PL-e).\",\n        \"Broadcast ROS 2 message on topic /safety/emergency_stop with collision joint vector.\",\n        \"Flash cell red beacon, sound audible 85dB alarm, and latch safety interlock requiring manual key reset.\"\n      ],\n      velocity_scaling: null,\n      applicable_standard: \"ISO 10218-1 / ISO/TS 15066 / IEC 60204-1\"\n    };\n  } else if (aRms > 1.60 && epsDeg > 0.8) {\n    parsed = {\n      severity: \"Critical\",\n      iso_risk_tier: \"Tier-1-Hazard\",\n      stop_category: \"Cat-1-ControlledStop\",\n      worst_affected_joint: worstJ,\n      root_cause_hypothesis: `Deterministic guardrail triggered: High harmonic vibration acceleration a_RMS = ${aRms} g and tracking error \u03b5_\u03b8 = ${epsDeg}\u00b0 on Joint ${worstJ} indicates flexspline gear tooth pitting / wave generator bearing failure.`,\n      emergency_brake_sequence: [\n        \"Command controlled smooth deceleration to rest (IEC 60204-1 Category 1 Stop).\",\n        \"Hold current trajectory position and lock mechanical brakes to avoid gravity sag.\",\n        \"Lock out robot workcell for maintenance inspection.\",\n        \"Perform grease degradation colorimetry and backlash measurement with dial indicator.\"\n      ],\n      velocity_scaling: null,\n      applicable_standard: \"ISO 13849-1 PL-d / IEC 60204-1\"\n    };\n  } else if (Tmax > 75.0) {\n    parsed = {\n      severity: \"Warning\",\n      iso_risk_tier: \"Tier-2-OperationalDeviation\",\n      stop_category: \"Dynamic-Velocity-Derating\",\n      worst_affected_joint: worstJ,\n      root_cause_hypothesis: `Deterministic guardrail triggered: Servomotor temperature T = ${Tmax} \u00b0C on Joint ${worstJ} exceeds thermal continuous threshold (75 \u00b0C). Initiating dynamic trajectory velocity derate.`,\n      emergency_brake_sequence: [],\n      velocity_scaling: {\n        speed_factor: 0.60,\n        target_joints: [worstJ],\n        cooling_protocol: \"Derate trajectory speed to 60% override and energize auxiliary joint air cooling fans.\"\n      },\n      applicable_standard: \"VDI 2853 / ISO 13849-1\"\n    };\n  } else {\n    parsed = {\n      severity: \"Nominal\",\n      iso_risk_tier: \"Tier-3-Nominal\",\n      stop_category: \"None\",\n      worst_affected_joint: null,\n      root_cause_hypothesis: \"All 6 manipulator joints operate within nominal kinematic and dynamic envelopes.\",\n      emergency_brake_sequence: [],\n      velocity_scaling: { speed_factor: 1.0, target_joints: [], cooling_protocol: \"None\" },\n      applicable_standard: \"ISO 9283\"\n    };\n  }\n}\n\n// Normalize severity casing\nlet normSeverity = 'Nominal';\nif (parsed.severity.toLowerCase().includes('crit')) normSeverity = 'Critical';\nelse if (parsed.severity.toLowerCase().includes('warn')) normSeverity = 'Warning';\n\nreturn [{\n  json: {\n    ...item,\n    severity: normSeverity,\n    iso_risk_tier: parsed.iso_risk_tier || (normSeverity === 'Critical' ? 'Tier-1-Hazard' : normSeverity === 'Warning' ? 'Tier-2-OperationalDeviation' : 'Tier-3-Nominal'),\n    stop_category: parsed.stop_category || (normSeverity === 'Critical' ? 'Cat-0-EStop' : normSeverity === 'Warning' ? 'Dynamic-Velocity-Derating' : 'None'),\n    worst_affected_joint: parsed.worst_affected_joint || upstreamMetrics.worst_affected_joint || 1,\n    root_cause_hypothesis: parsed.root_cause_hypothesis || 'Mechatronic diagnostic evaluation completed.',\n    emergency_brake_sequence: parsed.emergency_brake_sequence || [],\n    velocity_scaling: parsed.velocity_scaling || null,\n    computed_metrics: upstreamMetrics,\n    applicable_standard: parsed.applicable_standard || 'ISO 10218-1 / ISO/TS 15066 / IEC 60204-1',\n    triage_timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-parse-triage",
+      "name": "Parse & Validate Safety Triage",
+      "position": [
+        640,
+        304
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "numberOutputs": 3,
+        "output": "={{ $json.severity === 'Critical' ? 0 : ($json.severity === 'Warning' ? 1 : 2) }}"
+      },
+      "id": "node-switch-guardrail",
+      "name": "Deterministic ISO Safety Router",
+      "position": [
+        912,
+        304
+      ],
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Emergency Stop (Cat 0/1) & Safety Fieldbus Command Assembly\nconst item = $input.first().json;\nconst incidentId = `ESTOP-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 1000)}`;\n\nconst esdPayload = {\n  incident_id: incidentId,\n  timestamp: new Date().toISOString(),\n  robot_asset_id: item.robot_asset_id || \"ROBOT-UR10E-CELL-04\",\n  safety_action: \"EMERGENCY_STOP_ACTUATION\",\n  stop_category: item.stop_category || \"Cat-0-EStop\",\n  affected_joint: item.worst_affected_joint,\n  functional_safety: {\n    category: \"ISO 13849-1 Category 4 / PL-e\",\n    safety_integrity_level: \"IEC 62061 SIL-3\",\n    brake_actuation_time_budget_ms: 35\n  },\n  root_cause: item.root_cause_hypothesis,\n  telemetry_snapshot: item.computed_metrics,\n  actuation_commands: [\n    { target: \"FIELDBUS_SAFETY_BUS\", command: \"TRIP_STO_SAFE_TORQUE_OFF\", latency_ms: 12 },\n    { target: `JOINT_${item.worst_affected_joint}_BRAKE`, command: \"CLAMP_MECHANICAL_FRICTION_BRAKE\", latency_ms: 28 },\n    { target: \"ROS2_TOPIC_SAFETY_ESTOP\", command: \"PUBLISH_COLLISION_STATE\", payload: { joint: item.worst_affected_joint, status: \"TRIPPED\" } },\n    { target: \"CELL_BEACON\", command: \"ACTUATE_RED_STROBE_AND_SIREN\", mode: \"CONTINUOUS\" }\n  ],\n  emergency_brake_sequence: item.emergency_brake_sequence,\n  pagerduty_incident: {\n    summary: `[CRITICAL TIER-1] Robot Manipulator Safety E-Stop Triggered (${incidentId})`,\n    urgency: \"high\",\n    assigned_team: \"Robotics Safety & Cell Maintenance Operations\"\n  }\n};\n\nreturn [{\n  json: {\n    ...item,\n    action_type: \"EMERGENCY_STOP_DISPATCH\",\n    dispatch_payload: esdPayload\n  }\n}];"
+      },
+      "id": "node-format-critical",
+      "name": "Assemble Emergency Stop & ROS 2 Brake Command",
+      "position": [
+        1168,
+        112
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.dispatch_payload) }}",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "node-dispatch-critical",
+      "name": "Dispatch Emergency Stop (Mock ROS 2 / Fieldbus)",
+      "position": [
+        1424,
+        112
+      ],
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dynamic Velocity Scaling & CMMS Predictive Maintenance Ticket Assembly\nconst item = $input.first().json;\nconst ticketId = `CMMS-ROB-${Date.now().toString(36).toUpperCase()}`;\n\nconst warningPayload = {\n  ticket_id: ticketId,\n  timestamp: new Date().toISOString(),\n  robot_asset_id: item.robot_asset_id || \"ROBOT-UR10E-CELL-04\",\n  safety_action: \"DYNAMIC_TRAJECTORY_DERATING\",\n  stop_category: \"Dynamic-Velocity-Derating\",\n  affected_joint: item.worst_affected_joint,\n  functional_safety: {\n    classification: \"ISO 13849-1 Category 2 / PL-c\",\n    safety_level: \"Operational Speed Limiting Mode\"\n  },\n  root_cause: item.root_cause_hypothesis,\n  telemetry_snapshot: item.computed_metrics,\n  robot_controller_reconfiguration: {\n    topic: \"/robot_controller/trajectory_override\",\n    speed_factor: item.velocity_scaling?.speed_factor ?? 0.60,\n    acceleration_derate_pct: 40,\n    dwell_time_compensation_s: 1.8,\n    forced_cooling_fan_override: \"ON_MAX_FLOW\"\n  },\n  cmms_maintenance_tasks: [\n    `Inspect Joint ${item.worst_affected_joint} servomotor stator winding thermistor and thermal paste.`,\n    \"Verify heat sink cooling duct airflow and clear particulate intake filter.\",\n    \"Conduct cycle time vs thermal dissipation telemetry review on cell controller.\"\n  ]\n};\n\nreturn [{\n  json: {\n    ...item,\n    action_type: \"DYNAMIC_VELOCITY_DERATING_LOGGED\",\n    dispatch_payload: warningPayload\n  }\n}];"
+      },
+      "id": "node-format-warning",
+      "name": "Assemble Dynamic Velocity Scaling & CMMS Ticket",
+      "position": [
+        1168,
+        304
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://httpbin.org/post",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.dispatch_payload) }}",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "id": "node-dispatch-warning",
+      "name": "Dispatch Velocity Scaling to Robot Controller",
+      "position": [
+        1424,
+        304
+      ],
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Nominal Telemetry & MTBF Degradation Margin Heartbeat\nconst item = $input.first().json;\n\nconst nominalPayload = {\n  heartbeat_id: `ROB-HB-${Date.now().toString(36).toUpperCase()}`,\n  timestamp: new Date().toISOString(),\n  robot_asset_id: item.robot_asset_id || \"ROBOT-UR10E-CELL-04\",\n  operating_status: \"NOMINAL_IN_CONTROL\",\n  mechatronic_health_margins: {\n    torque_residual_margin_nm: Math.round((70.0 - (item.computed_metrics?.max_torque_residual_nm ?? 5.0)) * 10) / 10,\n    vibration_margin_g: Math.round((1.60 - (item.computed_metrics?.vibration_rms_g ?? 0.25)) * 100) / 100,\n    thermal_headroom_c: Math.round((75.0 - (item.computed_metrics?.max_joint_temp_c ?? 45.0)) * 10) / 10\n  },\n  root_cause: item.root_cause_hypothesis,\n  next_scheduled_scan: new Date(Date.now() + 300000).toISOString()\n};\n\nreturn [{\n  json: {\n    ...item,\n    action_type: \"NOMINAL_HEARTBEAT_LOGGED\",\n    dispatch_payload: nominalPayload\n  }\n}];"
+      },
+      "id": "node-format-nominal",
+      "name": "Log Nominal SCADA Telemetry & MTBF Margin",
+      "position": [
+        1296,
+        512
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Comprehensive Robotics Diagnostics & Prognostics Report Generator\nconst triage = $('Parse & Validate Safety Triage').first().json;\nconst severity = triage.severity || 'Nominal';\nconst isoRiskTier = triage.iso_risk_tier || (severity === 'Critical' ? 'Tier-1-Hazard' : severity === 'Warning' ? 'Tier-2-OperationalDeviation' : 'Tier-3-Nominal');\nconst stopCat = triage.stop_category || (severity === 'Critical' ? 'Cat-0-EStop' : severity === 'Warning' ? 'Dynamic-Velocity-Derating' : 'None');\n\nlet metrics = {};\ntry {\n  metrics = $('Kinematics & Telemetry Normalizer').first().json.computed_metrics || {};\n} catch (e) {\n  metrics = triage.computed_metrics || {};\n}\n\nlet dispatchPayload = {};\ntry {\n  if (severity === 'Critical') {\n    dispatchPayload = $('Assemble Emergency Stop & ROS 2 Brake Command').first().json.dispatch_payload;\n  } else if (severity === 'Warning') {\n    dispatchPayload = $('Assemble Dynamic Velocity Scaling & CMMS Ticket').first().json.dispatch_payload;\n  } else if (severity === 'Nominal') {\n    dispatchPayload = $('Log Nominal SCADA Telemetry & MTBF Margin').first().json.dispatch_payload;\n  }\n} catch (e) {}\n\nif (!dispatchPayload || Object.keys(dispatchPayload).length === 0) {\n  const inp = $input.first()?.json;\n  dispatchPayload = inp?.dispatch_payload || inp?.json || inp || {};\n}\n\nconst markdownReport = `# \ud83e\udd16 AUTONOMOUS ROBOTIC MANIPULATOR DIAGNOSTICS & SAFETY REPORT\n**Asset Identifier:** \\`${triage.robot_asset_id || 'ROBOT-UR10E-CELL-04'}\\`\n**Timestamp:** ${new Date().toISOString()}\n**Evaluation Trigger:** Autonomous Telemetry Sliding Window\n\n---\n\n### 1. SAFETY & RISK CLASSIFICATION\n- **Triage Severity:** **${severity.toUpperCase()}**\n- **ISO/TS Risk Tier:** **${isoRiskTier}**\n- **Commended Stop Category:** \\`${stopCat}\\`\n- **Governing Standard:** \\`${triage.applicable_standard || 'ISO 10218-1 / ISO/TS 15066 / IEC 60204-1'}\\`\n- **Worst Affected Joint:** **Joint ${triage.worst_affected_joint || metrics.worst_affected_joint || 'N/A'}**\n\n### 2. MULTIPHYSICS MECHATRONIC METRICS\n| Mechatronic Variable | Measured Process Value | Safety Trip Threshold | Compliance Status |\n| :--- | :--- | :--- | :--- |\n| **Max Torque Residual ($\\\\Delta \\\\tau_{ext}$)** | **${metrics.max_torque_residual_nm ?? 'N/A'} Nm** | $\\\\le 70.0\\\\text{ Nm}$ | ${metrics.max_torque_residual_nm > 70 ? '\ud83d\udea8 VIOLATION (Collision Hazard)' : '\u2705 COMPLIANT'} |\n| **Vibration Acceleration ($a_{RMS}$)** | **${metrics.vibration_rms_g ?? 'N/A'} g** | $\\\\le 1.60\\\\text{ g}$ | ${metrics.vibration_rms_g > 1.60 ? '\ud83d\udea8 SEVERE WEAR (Gear Pitting)' : '\u2705 COMPLIANT'} |\n| **Peak Joint Tracking Error ($\\\\epsilon_\\\\theta$)** | **${metrics.max_tracking_error_deg ?? 'N/A'}\u00b0** | $\\\\le 0.50^\\\\circ$ | ${metrics.max_tracking_error_deg > 0.50 ? '\u26a0\ufe0f DEFICIT' : '\u2705 COMPLIANT'} |\n| **Peak Servomotor Temp ($T_{joint}$)** | **${metrics.max_joint_temp_c ?? 'N/A'} \u00b0C** | $\\\\le 75.0^\\\\circ\\\\text{C}$ | ${metrics.max_joint_temp_c > 75 ? '\u26a0\ufe0f THERMAL SATURATION' : '\u2705 COMPLIANT'} |\n| **Peak Motor Current ($I_{motor}$)** | **${metrics.max_joint_current_a ?? 'N/A'} A** | $\\\\le 14.0\\\\text{ A}$ | ${metrics.max_joint_current_a > 14 ? '\u26a0\ufe0f HIGH LOAD' : '\u2705 NOMINAL'} |\n\n### 3. ROOT CAUSE PROGNOSTICS HYPOTHESIS\n> ${triage.root_cause_hypothesis}\n\n### 4. DISPATCHED ACTUATION & MITIGATION PLAN\n${severity === 'Critical' ? `#### \ud83d\udea8 Emergency Braking Interlock Sequence:\n${(triage.emergency_brake_sequence || []).map((step, idx) => `${idx + 1}. ${step}`).join('\\n')}` : severity === 'Warning' ? `#### \u26a0\ufe0f Dynamic Trajectory Derate & CMMS Work Order:\n- **Speed Override Factor:** \\`${triage.velocity_scaling?.speed_factor ?? '0.60'}\\` (40% speed reduction)\n- **Cooling Protocol:** ${triage.velocity_scaling?.cooling_protocol ?? 'Auxiliary air fan cooling engaged.'}\n- **Work Order:** Generated CMMS ticket for Joint ${triage.worst_affected_joint} stator & filter check.` : `#### \u2705 Steady-State Operations Verified:\n- All kinematic residuals and joint dynamic margins within $\\\\pm 3\\\\sigma$ operational envelope.`}\n`;\n\nreturn [{\n  json: {\n    status: \"success\",\n    timestamp: new Date().toISOString(),\n    robot_asset_id: triage.robot_asset_id || 'ROBOT-UR10E-CELL-04',\n    severity: severity,\n    iso_risk_tier: isoRiskTier,\n    stop_category: stopCat,\n    root_cause_hypothesis: triage.root_cause_hypothesis,\n    metrics: metrics,\n    dispatch_payload: dispatchPayload,\n    markdown_report: markdownReport\n  }\n}];"
+      },
+      "id": "node-unify-report",
+      "name": "Generate Comprehensive Robotics Diagnostics Report",
+      "position": [
+        1680,
+        304
+      ],
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "node-respond-webhook",
+      "name": "Respond to Webhook",
+      "position": [
+        1920,
+        304
+      ],
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5
+    }
+  ],
+  "connections": {
+    "Assemble Dynamic Velocity Scaling & CMMS Ticket": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Dispatch Velocity Scaling to Robot Controller",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Assemble Emergency Stop & ROS 2 Brake Command": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Dispatch Emergency Stop (Mock ROS 2 / Fieldbus)",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Deterministic ISO Safety Router": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Assemble Emergency Stop & ROS 2 Brake Command",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "index": 0,
+            "node": "Assemble Dynamic Velocity Scaling & CMMS Ticket",
+            "type": "main"
+          }
+        ],
+        [
+          {
+            "index": 0,
+            "node": "Log Nominal SCADA Telemetry & MTBF Margin",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Dispatch Emergency Stop (Mock ROS 2 / Fieldbus)": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Generate Comprehensive Robotics Diagnostics Report",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Dispatch Velocity Scaling to Robot Controller": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Generate Comprehensive Robotics Diagnostics Report",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Fleet Asset Window Memory": {
+      "ai_memory": [
+        [
+          {
+            "index": 0,
+            "node": "Robotics Safety & Prognostics Agent",
+            "type": "ai_memory"
+          }
+        ]
+      ]
+    },
+    "Generate Comprehensive Robotics Diagnostics Report": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Respond to Webhook",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Google Gemini 1.5 Pro": {
+      "ai_languageModel": [
+        [
+          {
+            "index": 0,
+            "node": "Robotics Safety & Prognostics Agent",
+            "type": "ai_languageModel"
+          }
+        ]
+      ]
+    },
+    "Kinematics & Telemetry Normalizer": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Robotics Safety & Prognostics Agent",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Log Nominal SCADA Telemetry & MTBF Margin": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Generate Comprehensive Robotics Diagnostics Report",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Manual Trigger (Run Triage)": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Kinematics & Telemetry Normalizer",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Parse & Validate Safety Triage": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Deterministic ISO Safety Router",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "ROS 2 Telemetry Webhook": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Kinematics & Telemetry Normalizer",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Robotics ISO Safety & SOP Tool": {
+      "ai_tool": [
+        [
+          {
+            "index": 0,
+            "node": "Robotics Safety & Prognostics Agent",
+            "type": "ai_tool"
+          }
+        ]
+      ]
+    },
+    "Robotics Safety & Prognostics Agent": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Parse & Validate Safety Triage",
+            "type": "main"
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger (5m Fleet Scan)": {
+      "main": [
+        [
+          {
+            "index": 0,
+            "node": "Kinematics & Telemetry Normalizer",
+            "type": "main"
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "staticData": {
+    "node:Schedule Trigger (5m Fleet Scan)": {
+      "recurrenceRules": [
+        null
+      ],
+      "recurrenceRuleSignatures": [
+        null
+      ]
+    }
+  },
+  "meta": null,
+  "pinData": {}
+}

@@ -1,0 +1,17 @@
+# Environment & secrets
+.env
+*.env.local
+
+# n8n persistent local database and files
+data/*
+!data/.gitkeep
+
+# Operating system artifacts
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+
+# Node dependencies
+node_modules/
+npm-debug.log
